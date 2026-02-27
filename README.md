@@ -4,6 +4,7 @@
 **Requirements: Azerothcore + ALE + AIO (AIO needed for the full streamlined flow)**
 
 SQL note: it generates a lot of upgrade items. Let it finish; it can take a bit even with the optimizations I put in place.
+The sql makes 25 copies of each item rare quality and higher utilizing id 1 million+
 
 Item tier/upgrade system inspired by Gates of Andaron (4Story). Eligible items can roll and progress from +1 to +25. This is a gold sink and gets expensive fast.
 Rare/Epic/Legendary only, and the item must have something to scale: weapon damage and/or stats. Spell-only items with nothing to scale do not qualify.
