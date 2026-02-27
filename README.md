@@ -24,5 +24,6 @@ Script is highly configurable.
 
 1. Place `Upgrade.lua` in your server's `lua` folder.
 2. Unzip `Upgrade.zip` into your `addons` folder. Make sure to unzip it there.
-3. Run `ItemUpgradeGenerator.sql` on your database and wait for it to finish — this may take a bit of time to load.
-4. Run `Benson.sql` on your database to generate the NPC with the correct model and ID for the script to hook into.
+3. Run `keepsake.sql` on your database to generate the two keystone items the script recognizes.
+4. Run `ItemUpgradeGenerator.sql` on your database and wait for it to finish — this may take a bit of time to load.
+5. Run `Benson.sql` on your database to generate the NPC with the correct model and ID for the script to hook into.
