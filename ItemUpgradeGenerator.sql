@@ -1,6 +1,7 @@
 /* =========================================================
    AzerothCore item_template upgrade generator (+1..+25)
-   Refined for less repeated string/POW work.
+   FIXED for Lua formula:
+   cloneEntry = 1000000 + (baseEntry * 25) + (tier - 1)
    ========================================================= */
 
 /* ---------------------------
@@ -30,7 +31,7 @@ INSERT IGNORE INTO item_template (
   ItemLimitCategory, HolidayId
 )
 SELECT
-  (1000000 + (base.entry * 100) + lv.plus_level) AS entry,
+  (1000000 + (base.entry * 25) + (lv.plus_level - 1)) AS entry,
 
   base.class, base.subclass, base.SoundOverrideSubclass,
 
@@ -166,14 +167,13 @@ WHERE
 
 /* -----------------------------------------------------
    2) QUALITY FIX: Spell sync (base -> upgraded)
-      - Uses DIV/% instead of FLOOR/MOD on (entry-1000000)
-      - Uses null-safe equality (<=>) instead of COALESCE
-      - Adds an upper bound so it won’t scan unrelated 1,000,000+ entries
+      FIXED to decode base from:
+      base = (entry - 1000000) DIV 25
    ----------------------------------------------------- */
 
 UPDATE item_template up
 JOIN item_template base
-  ON base.entry = (up.entry DIV 100) - 10000
+  ON base.entry = ((up.entry - 1000000) DIV 25)
 SET
   up.spellid_1 = base.spellid_1,
   up.spelltrigger_1 = base.spelltrigger_1,
@@ -215,10 +215,9 @@ SET
   up.spellcategory_5 = base.spellcategory_5,
   up.spellcategorycooldown_5 = base.spellcategorycooldown_5
 WHERE
-  up.entry >= 1000000
-  AND up.entry <= 50999925
-  AND (up.entry % 100) BETWEEN 1 AND 25
-  AND base.entry < 500000
+  up.entry >= 1000025
+  AND up.entry <= 13499999
+  AND base.entry BETWEEN 1 AND 499999
   AND NOT (
     up.spellid_1 <=> base.spellid_1 AND
     up.spelltrigger_1 <=> base.spelltrigger_1 AND
