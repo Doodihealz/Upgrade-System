@@ -170,6 +170,7 @@ local STATE = {
     ITEM_INSTANCE_CREATOR_COLUMN = nil,
     CHAR_INV_ITEM_COLUMN = nil,
     InProgress = {},
+    AioUpgradeClientReady = {},
 }
 
 local PendingSelection = STATE.PendingSelection
@@ -182,6 +183,7 @@ local AnnounceCooldowns = STATE.AnnounceCooldowns
 local RecentAioUpgradeRequests = STATE.RecentAioUpgradeRequests
 local RecentAioStoneBuyRequests = STATE.RecentAioStoneBuyRequests
 local InProgress = STATE.InProgress
+local AioUpgradeClientReady = STATE.AioUpgradeClientReady
 local PlayerPityLoaded = STATE.PlayerPityLoaded
 local ItemPityLoaded = STATE.ItemPityLoaded
 local RETRY_TIMINGS = {
@@ -248,6 +250,8 @@ local LOOT_ROLL_QUEUE_INITIAL_DELAY_MS = _L.ROLL_QUEUE_INITIAL_DELAY_MS
 local LOOT_GENERAL_QUEUE_INITIAL_DELAY_MS = _L.LOOT_QUEUE_INITIAL_DELAY_MS
 if LOOT_UPGRADE_ALLOW_UNKNOWN_STATS == nil then LOOT_UPGRADE_ALLOW_UNKNOWN_STATS = true end
 if LOOT_UPGRADE_REMINDER_ENABLED == nil then LOOT_UPGRADE_REMINDER_ENABLED = true end
+LOOT_UPGRADE_CHANCE_DENOM = tonumber(LOOT_UPGRADE_CHANCE_DENOM) or 300
+if LOOT_UPGRADE_CHANCE_DENOM < 1 then LOOT_UPGRADE_CHANCE_DENOM = 1 end
 LOOT_UPGRADE_REMINDER_INTERVAL_SEC = tonumber(LOOT_UPGRADE_REMINDER_INTERVAL_SEC) or 600
 if LOOT_UPGRADE_REMINDER_INTERVAL_SEC < 30 then LOOT_UPGRADE_REMINDER_INTERVAL_SEC = 30 end
 LOOT_SWAP_RETRY_DELAY_MS = tonumber(LOOT_SWAP_RETRY_DELAY_MS) or 200
@@ -582,6 +586,22 @@ function ReleaseUpgradeLock(player)
     local guidLow = safeGetGuidLow(player)
     if not guidLow then return end
     InProgress[guidLow] = nil
+end
+
+local function SetAioUpgradeClientReady(player, isReady)
+    local guidLow = safeGetGuidLow(player)
+    if not guidLow then return end
+    if isReady then
+        AioUpgradeClientReady[guidLow] = true
+    else
+        AioUpgradeClientReady[guidLow] = nil
+    end
+end
+
+local function HasAioUpgradeClientReady(player)
+    local guidLow = safeGetGuidLow(player)
+    if not guidLow then return false end
+    return AioUpgradeClientReady[guidLow] == true
 end
 
 local AIO_UPGRADE_REQUEST_DEDUPE_WINDOW_SEC = 3
@@ -1087,8 +1107,7 @@ function GetPlayerLootBadLuckCount(player)
 end
 
 function GetCurrentLootUpgradeChanceDenom(player)
-    local baseDenom = tonumber(LOOT_UPGRADE_CHANCE_DENOM) or 300
-    if baseDenom < 1 then baseDenom = 1 end
+    local baseDenom = LOOT_UPGRADE_CHANCE_DENOM or 300
 
     local badLuck = GetPlayerLootBadLuckCount(player)
     local currentDenom = baseDenom - badLuck
@@ -1097,15 +1116,45 @@ function GetCurrentLootUpgradeChanceDenom(player)
     return math.floor(currentDenom), badLuck
 end
 
+local function GetLootChancePercentFromDenom(denom)
+    local safeDenom = math.floor(tonumber(denom) or 1)
+    if safeDenom < 1 then safeDenom = 1 end
+    return math.floor(((100 / safeDenom) * 100) + 0.5) / 100
+end
+
+local function GetLootChanceColorHex(chancePercent)
+    local pct = tonumber(chancePercent) or 0
+    if pct >= 10 then return "00ff00" end
+    if pct >= 3 then return "66ff66" end
+    if pct >= 1 then return "ffff00" end
+    if pct >= 0.5 then return "ff9900" end
+    return "ff4444"
+end
+
+local function FormatLootChanceText(denom)
+    local safeDenom = math.floor(tonumber(denom) or 1)
+    if safeDenom < 1 then safeDenom = 1 end
+    local pct = GetLootChancePercentFromDenom(safeDenom)
+    local colorHex = GetLootChanceColorHex(pct)
+    return string.format("|cffffff001 in %d|r (|cff%s%.2f%%|r)", safeDenom, colorHex, pct)
+end
+
 function SendLootChanceReminder(player)
     if not isValidPlayer(player) then return end
-    local currentDenom = GetCurrentLootUpgradeChanceDenom(player)
+    local currentDenom, badLuck = GetCurrentLootUpgradeChanceDenom(player)
     if not currentDenom then return end
-
-    player:SendBroadcastMessage(string.format(
-        "Hey there, just a friendly reminder: your upgrade chance right now is |cffffff001/%d|r.",
-        currentDenom
-    ))
+    local chanceText = FormatLootChanceText(currentDenom)
+    if badLuck and badLuck > 0 then
+        player:SendBroadcastMessage(string.format(
+            "|cff00c0ff[Upgrade Reminder]|r Your current loot upgrade chance is %s |cff88ff88(Bad luck: %d)|r",
+            chanceText, badLuck
+        ))
+    else
+        player:SendBroadcastMessage(string.format(
+            "|cff00c0ff[Upgrade Reminder]|r Your current loot upgrade chance is %s",
+            chanceText
+        ))
+    end
 end
 
 function IncrementPlayerLootBadLuckCount(player, qualityBonus)
@@ -1420,11 +1469,11 @@ function ProcessLootAward(player, item, count)
     
     LootUpgradeDedupeCache[dedupeKey] = currentTime
 
-    local lootBadLuckCount = GetPlayerLootBadLuckCount(player)
-    
-    local adjustedChanceDenom = tonumber(LOOT_UPGRADE_CHANCE_DENOM) or 300
-    adjustedChanceDenom = adjustedChanceDenom - lootBadLuckCount
-    if adjustedChanceDenom < 1 then adjustedChanceDenom = 1 end
+    local adjustedChanceDenom, lootBadLuckCount = GetCurrentLootUpgradeChanceDenom(player)
+    if not adjustedChanceDenom then
+        if UPGRADE_DEBUG then DebugLog("ProcessLootAward: failed to resolve current chance denominator") end
+        return
+    end
     
     local quality = item:GetQuality()
     local qualityBonus = GetQualityBasedBonus(quality)
@@ -4243,8 +4292,12 @@ function OnGossipHello(event, player, creature)
         player:SendBroadcastMessage("Upgrade system disabled.")
         return
     end
+    if AIO and HasAioUpgradeClientReady(player) then
+        player:GossipComplete()
+        AIO.Handle(player, "UpgradeUI", "OpenUI")
+        return
+    end
     ShowMainMenu(player, creature)
-    if AIO then AIO.Handle(player, "UpgradeUI", "OpenUI") end
 end
 
 function OnGossipSelect(event, player, creature, sender, intid, code, menu_id)
@@ -4436,6 +4489,7 @@ function OnStartup(event)
     ClearTable(InProgress)
     ClearTable(RecentAioUpgradeRequests)
     ClearTable(RecentAioStoneBuyRequests)
+    ClearTable(AioUpgradeClientReady)
     ClearTable(PlayerPityLoaded)
     ClearTable(ItemPityLoaded)
     if CLONE_NAMESPACE_STRIDE > 0 and CLONE_RANGE_MIN == nil and CLONE_RANGE_MAX == nil then
@@ -4452,6 +4506,7 @@ function OnPlayerLogin(event, player)
     if not player then return end
     local guidLow = safeGetGuidLow(player)
     if not guidLow then return end
+    AioUpgradeClientReady[guidLow] = nil
     PlayerPityLoaded[guidLow] = nil
     LoadPlayerPityFromDB(guidLow)
 end
@@ -4466,6 +4521,7 @@ function OnPlayerLogout(event, player)
         InProgress[guidLow] = nil
         RecentAioUpgradeRequests[guidLow] = nil
         RecentAioStoneBuyRequests[guidLow] = nil
+        AioUpgradeClientReady[guidLow] = nil
         AnnounceCooldowns[guidLow] = nil
         
         if CLEAR_PITY_ON_LOGOUT then
@@ -4505,12 +4561,12 @@ function OnPlayerCommand(event, player, command)
             end
             
             local currentChanceDenom, blc = GetCurrentLootUpgradeChanceDenom(player)
-            local currentChancePercent = math.floor((1 / currentChanceDenom) * 10000) / 100
+            local chanceText = FormatLootChanceText(currentChanceDenom)
             
             player:SendBroadcastMessage("|cff00ff00[Your Current Upgrade Chance]|r")
             player:SendBroadcastMessage(string.format(
-                "Upgrade Chance: |cffffff001 in %d|r (|cff00ff00%.2f%%|r)",
-                currentChanceDenom, currentChancePercent
+                "Upgrade Chance: %s",
+                chanceText
             ))
             player:SendBroadcastMessage("When triggered: random |cff00ff00+5 to +20|r tier upgrade")
             player:SendBroadcastMessage("|cffffffffTracks eligible rare+ items gained from loot, group roll, and created/crafted items.|r")
@@ -4564,8 +4620,15 @@ end
 if AIO then
     AIO.AddHandlers("UpgradeUI", {
 
+        ClientReady = function(player, clientVersion)
+            if not isValidPlayer(player) then return end
+            SetAioUpgradeClientReady(player, true)
+            AIO.Handle(player, "UpgradeUI", "ClientReadyAck", tostring(clientVersion or ""))
+        end,
+
         GetEquippedItems = function(player)
             if not isValidPlayer(player) then return end
+            SetAioUpgradeClientReady(player, true)
             local items = {}
             for slot = 0, 18 do
                 if not EXCLUDED_SLOTS[slot] then
@@ -4605,6 +4668,7 @@ if AIO then
 
         GetItemPreview = function(player, slot)
             if not isValidPlayer(player) then return end
+            SetAioUpgradeClientReady(player, true)
             if type(slot) ~= "number" then return end
             if EXCLUDED_SLOTS[slot] then
                 AIO.Handle(player, "UpgradeUI", "ReceiveError", "That slot is not eligible for upgrades.")
@@ -4685,6 +4749,7 @@ if AIO then
 
         BuyStone = function(player, stoneMode, amount, slot, requestId)
             if not isValidPlayer(player) then return end
+            SetAioUpgradeClientReady(player, true)
 
             if IsDuplicateAioStoneBuyRequest(player, requestId) then
                 if UPGRADE_DEBUG then
@@ -4723,6 +4788,7 @@ if AIO then
 
         DoUpgrade = function(player, slot, cMode, requestId)
             if not isValidPlayer(player) then return end
+            SetAioUpgradeClientReady(player, true)
             if type(slot) ~= "number" then return end
             cMode = math.max(0, math.min(2, tonumber(cMode) or 0))
 
