@@ -3,6 +3,8 @@
 
 BACK YOUR STUFF UP FIRST. Just as a precaution.
 
+Fixed a sql query bug. Please delete the old items if they did not register with the script and run the new sql query. Also, please export the items when its done generating into an item.dbc into your client. I say to do this so there are no equip conflicts.
+
 **Requirements: Azerothcore + ALE + AIO (AIO needed for the full streamlined flow)**
 
 **SQL note: it generates a lot of upgrade items. Let it finish; it can take a bit even with the optimizations I put in place.
