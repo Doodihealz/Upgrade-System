@@ -531,12 +531,113 @@ function IsEligibleItem(item)
     return true
 end
 
+local ITEM_TEMPLATE_SCHEMA_CACHE = {
+    CheckedAt = 0,
+    StatsCount = nil,
+    StatPairs = nil,
+}
+
+local function EscapeWorldSchemaLiteral(value)
+    value = tostring(value or "")
+    value = value:gsub("\\", "\\\\")
+    value = value:gsub("'", "''")
+    return value
+end
+
+local function SafeWorldQuery(sql)
+    if not WorldDBQuery then return nil end
+    local ok, result = pcall(WorldDBQuery, sql)
+    if not ok then
+        if UPGRADE_DEBUG and DebugLog then
+            DebugLog("WorldDBQuery failed: " .. tostring(result))
+        end
+        return nil
+    end
+    return result
+end
+
+local function ItemTemplateColumnExists(columnName)
+    if not columnName or columnName == "" then return false end
+    local q = SafeWorldQuery(string.format(
+        "SELECT COUNT(1) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'item_template' AND COLUMN_NAME = '%s'",
+        EscapeWorldSchemaLiteral(columnName)
+    ))
+    if not q then return false end
+    return (QueryGetInt(q, 0) or 0) > 0
+end
+
+local function RefreshItemTemplateSchemaCache(force)
+    local now = os.time()
+    if not force and ITEM_TEMPLATE_SCHEMA_CACHE.CheckedAt > 0 and (now - ITEM_TEMPLATE_SCHEMA_CACHE.CheckedAt) < 300 then
+        return
+    end
+
+    ITEM_TEMPLATE_SCHEMA_CACHE.CheckedAt = now
+    ITEM_TEMPLATE_SCHEMA_CACHE.StatsCount = ItemTemplateColumnExists("StatsCount")
+    ITEM_TEMPLATE_SCHEMA_CACHE.StatPairs = {}
+
+    for i = 1, 10 do
+        local typeColumn = "stat_type" .. i
+        local valueColumn = "stat_value" .. i
+        if ItemTemplateColumnExists(typeColumn) and ItemTemplateColumnExists(valueColumn) then
+            ITEM_TEMPLATE_SCHEMA_CACHE.StatPairs[#ITEM_TEMPLATE_SCHEMA_CACHE.StatPairs + 1] = {
+                TypeColumn = typeColumn,
+                ValueColumn = valueColumn,
+            }
+        end
+    end
+end
+
+local function TemplateHasStatsByEntry(entry)
+    entry = tonumber(entry) or 0
+    if entry <= 0 then return nil end
+    if not WorldDBQuery then return nil end
+
+    RefreshItemTemplateSchemaCache(false)
+
+    if ITEM_TEMPLATE_SCHEMA_CACHE.StatsCount == true then
+        local q = SafeWorldQuery(string.format("SELECT StatsCount FROM item_template WHERE entry=%u LIMIT 1", entry))
+        if q then
+            return (QueryGetInt(q, 0) or 0) > 0
+        end
+    end
+
+    local pairs = ITEM_TEMPLATE_SCHEMA_CACHE.StatPairs or {}
+    if #pairs > 0 then
+        local conditions = {}
+        for i = 1, #pairs do
+            local pair = pairs[i]
+            conditions[#conditions + 1] = string.format("(`%s` <> 0 AND `%s` <> 0)", pair.TypeColumn, pair.ValueColumn)
+        end
+        local q = SafeWorldQuery(string.format(
+            "SELECT CASE WHEN %s THEN 1 ELSE 0 END FROM item_template WHERE entry=%u LIMIT 1",
+            table.concat(conditions, " OR "),
+            entry
+        ))
+        if q then
+            return (QueryGetInt(q, 0) or 0) > 0
+        end
+    end
+
+    return nil
+end
+
 function HasItemStats(item)
     if not item then return false end
+
     if item.GetStatsCount and type(item.GetStatsCount) == "function" then
         local ok, res = pcall(item.GetStatsCount, item)
         if ok then return (res or 0) > 0 end
     end
+
+    local entry = safeItemGetEntry(item)
+    if entry and entry > 0 then
+        local templateHasStats = TemplateHasStatsByEntry(entry)
+        if templateHasStats ~= nil then
+            return templateHasStats == true
+        end
+    end
+
     return LOOT_UPGRADE_ALLOW_UNKNOWN_STATS == true
 end
 
